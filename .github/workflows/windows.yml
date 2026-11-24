@@ -1,0 +1,41 @@
+name: Windows release
+on:
+  workflow_dispatch:
+  push:
+    branches: ['main']
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build desktop app
+        run: dotnet publish -c Release -r win-x64 --self-contained true -o package
+      - name: Build SRT bonding engine from source
+        shell: pwsh
+        run: |
+          vcpkg install openssl:x64-windows
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake -S native -B build-bond -A x64 "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=x64-windows" "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build build-bond --config Release
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $null = New-Item -ItemType Directory -Force package/tools/bond
+          Copy-Item build-bond/Release/srt-island-bond.exe package/tools/bond
+          Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/libcrypto*.dll","$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/libssl*.dll" package/tools/bond
+      - name: Add installer
+        shell: pwsh
+        run: |
+          Copy-Item -LiteralPath 'Install SRT Island.cmd','Install-Dependencies.ps1','README.md' -Destination package
+          if (Get-ChildItem package -Recurse -File -Include engines.json,routes.json,encoders.json) {
+            throw 'Workstation configuration must not be included in the release.'
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SRT-Island-Windows-x64
+          path: package/

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#311b52">
+  <title>SRT Island</title>
+  <link rel="icon" type="image/png" href="island-logo.png">
+  <link rel="stylesheet" href="island.css">
+  <script src="island.js" defer></script>
+</head>
+<body>
+  <header class="top"><a class="brand" href="#dashboard"><img src="island-logo.png" alt=""> SRT Island</a></header>
+  <div class="layout">
+    <aside><nav aria-label="Control panel"><a href="#dashboard">Dashboard</a><a href="#routes">SRT Slots</a><a href="#outputs">Hardware outputs</a><a href="#encoders">Island Encoders</a><a href="#settings">Settings</a></nav></aside>
+    <main>
+      <p id="notice" role="status" hidden></p>
+      <section id="dashboard">
+        <div class="heading"><div><h1>Dashboard</h1><p>Signal, playout and encoder status for this station.</p></div></div>
+        <div class="summary"><div><strong id="total">0 / 8</strong><span>Configured slots</span></div><div><strong id="live">0</strong><span>Receiving video</span></div><div><strong id="assigned">0</strong><span>Active outputs</span></div></div>
+        <div class="panel fleet"><div class="heading compact"><h2>Slot previews</h2><a class="textLink" href="#routes">Manage slots</a></div><div id="dashboardSlots" class="dashboardGrid"></div></div>
+        <div class="panel fleet"><h2>Station status</h2><dl class="dashboardStatus">
+          <dt>Uptime</dt><dd id="uptime">—</dd><dt>App memory</dt><dd id="memory">—</dd>
+          <dt>Network addresses</dt><dd id="addresses">—</dd><dt>Saved encoders</dt><dd id="encoderCount">—</dd>
+        </dl></div>
+      </section>
+      <section id="routes" hidden>
+        <div class="heading"><div><h1>SRT Slots</h1><p>Configure a slot, then click its active preview to open live video.</p></div></div>
+        <div id="cards" class="grid"></div>
+      </section>
+      <section id="encoders" hidden>
+        <div class="heading"><div><h1>Island Encoders</h1><p>Save your fleet, check Tailscale presence, and control SRT outputs.</p></div><button id="newEncoder" class="primary">Add encoder</button></div>
+        <div class="panel fleet">
+          <h2>Address book</h2><div id="encoderBook"></div>
+        </div>
+        <div class="panel fleet">
+          <div class="heading compact"><h2>Tailscale peers</h2><form id="tailnetForm"><label>Source <select name="source"><option value="windows">This PC</option><option value="encoder">Connected encoder</option></select></label><label>Tag <input name="tag" value="tag:island" aria-label="Tailscale tag"></label><button>Refresh</button></form></div>
+          <p id="tailnetInfo" role="status"></p><div id="peers"></div>
+        </div>
+        <div class="panel fleet" id="encoderControl" hidden>
+          <div class="heading compact"><div><h2>Encoder controls</h2><p id="connectedAddress"></p></div><div><button id="refreshEncoder">Refresh</button> <button id="disconnectEncoder">Disconnect</button></div></div>
+          <div id="channels" class="grid"></div>
+        </div>
+      </section>
+      <section id="outputs" hidden>
+        <div class="heading"><div><h1>Hardware outputs</h1><p>Route video to a capture card or dedicate an extended GPU display to playout.</p></div><button id="scan">Refresh outputs</button></div>
+        <div class="panel fleet">
+          <div class="heading compact"><div><h2>GPU displays</h2><p>Extend the desktop in Windows and keep your operator monitor set as the main display.</p></div><button id="windowsDisplay">Windows Display Settings</button></div>
+          <p id="displayInfo" role="status"></p><div id="displays"></div><div id="gpuInventory"></div>
+          <p><small>Windows may report multiple targets for one connector, including adapter modes on DisplayPort.</small></p>
+        </div>
+        <div id="deckLinkCards"></div>
+        <div id="ajaCards"></div>
+        <details class="panel fleet hardware"><summary>AJA SDI / HDMI</summary><div class="heading compact"><p id="ajaInfo">Set the AJA GStreamer launcher in Settings to configure an output.</p><button id="ajaTest" disabled>Set up test pattern</button></div></details>
+      </section>
+      <section id="settings" hidden>
+        <div class="heading"><div><h1>Settings</h1><p>Set the local FFmpeg engines and recording destination.</p></div></div>
+        <form id="settingsForm" class="panel fields settings">
+          <label>SRT receiver executable<input name="receiver" required placeholder="C:\…\ffmpeg.exe"></label>
+          <label>DeckLink executable<input name="deckLink" placeholder="C:\…\ffmpeg-decklink.exe"></label>
+          <label>SRT bonding receiver executable<input name="bondReceiver" placeholder="C:\…\srt-island-bond.exe"></label>
+          <label>GPU display player (mpv)<input name="displayPlayer" placeholder="C:\…\mpv.com"></label>
+          <label>AJA GStreamer launcher<input name="ajaPlayer" placeholder="C:\…\gst-launch-1.0.exe"></label>
+          <label>Recordings folder<input name="recordings" required></label>
+          <div><button class="primary">Save settings</button></div>
+        </form>
+        <div class="panel fleet settings"><h2>Remote control</h2><p id="remoteControlStatus">Checking the remote API…</p><p>The remote API can read slot status and start or stop configured slots. See the README for authenticated access over Tailscale.</p></div>
+      </section>
+    </main>
+  </div>
+  <dialog id="editor">
+    <form id="routeForm">
+      <div class="dialogHead"><h2 id="editorTitle">Configure slot</h2><button type="button" data-close aria-label="Close">×</button></div>
+      <div class="fields">
+        <label>Route name<input name="name" required maxlength="100" placeholder="GoPro · Input 1"></label>
+        <label>Input<select name="input"><option value="srt">SRT stream</option><option value="pattern">Colour bars and 1 kHz tone</option><option value="file">Loop a video file</option></select></label>
+        <div class="pair" data-input="srt"><label>Connection mode<select name="mode"><option value="listener">Listener</option><option value="caller">Caller</option><option value="rendezvous">Rendezvous</option><option value="bonded">Bonded listener</option></select></label><label>Address<input name="host" value="0.0.0.0"></label></div>
+        <div class="pair" data-input="srt"><label>UDP port<input type="number" name="port" min="1" max="65535" value="9000"></label><label>Latency (ms)<input type="number" name="latency" min="20" max="8000" value="120"></label></div>
+        <div class="pair" data-input="srt"><label id="streamIdField">Stream ID<input name="streamId" maxlength="512" placeholder="Optional"></label><label id="bondSecretField" hidden>Bonding passphrase<input name="bondPassphrase" type="password" maxlength="79" autocomplete="off" placeholder="Optional"></label><label>Video decoding<select name="decoder"><option value="cpu">CPU · native FFmpeg</option><option value="auto">Automatic GPU with CPU fallback</option><option value="cuda">GPU · NVIDIA NVDEC</option><option value="d3d11va">GPU · Direct3D 11</option><option value="dxva2">GPU · DXVA2</option></select></label></div>
+        <label data-input="file" hidden>Video file path<input name="file" placeholder="C:\…\clip.mp4"></label>
+        <label>Output device<select name="device"><option value="">Preview only</option></select></label>
+        <div id="ajaFields" class="fields" hidden>
+          <label>AJA device index or serial<input name="ajaCard" value="0" maxlength="64" pattern="[A-Za-z0-9_\-]+"></label>
+          <div class="pair"><label>Video channel<input type="number" name="ajaChannel" value="1" min="1" max="8"></label>
+          <label>Connector<select name="ajaConnector"><option value="sdi-1">SDI 1</option><option value="sdi-2">SDI 2</option><option value="sdi-3">SDI 3</option><option value="sdi-4">SDI 4</option><option value="sdi-5">SDI 5</option><option value="sdi-6">SDI 6</option><option value="sdi-7">SDI 7</option><option value="sdi-8">SDI 8</option><option value="hdmi">HDMI</option></select></label></div>
+        </div>
+        <label id="displayAudio" hidden>Display audio (stereo)<select name="displayAudio"><option value="mute">Mute</option></select><small>Select the HDMI or DisplayPort playback endpoint for this display.</small></label>
+        <label id="exclusiveAudio" class="check" hidden><input name="exclusiveDisplayAudio" type="checkbox"> Exclusive display audio</label>
+        <div class="pair"><label id="hardwareRate">Hardware format<select name="rate"><option value="24000/1001">1080p23.98</option><option value="24">1080p24</option><option value="25">1080p25</option><option value="30000/1001">1080p29.97</option><option value="30">1080p30</option><option value="50">1080p50</option><option value="60000/1001">1080p59.94</option><option value="60">1080p60</option></select></label><label>Input audio track<input type="number" name="audioTrack" min="1" max="32" value="1"></label></div>
+        <div class="pair" id="audioPairs"><label>Stereo pairs to embed<input name="audioPairs" type="number" min="1" max="8" value="1"></label><label>Source audio layout<select name="audioLayout"><option value="tracks">Consecutive stereo tracks</option><option value="interleaved">One interleaved track</option></select></label></div>
+        <label data-input="srt" class="check"><input name="reconnect" type="checkbox" checked> Reconnect after a drop</label>
+        <label class="check" id="recordOption"><input name="record" type="checkbox"> Save source recording (MPEG-TS)</label>
+        <details id="restreamEditor" class="hardware">
+          <summary>Restream destinations</summary>
+          <div id="destinationRows"></div>
+          <button type="button" id="addDestination">Add destination</button>
+        </details>
+        <p id="formError" role="alert" hidden></p>
+      </div>
+      <div class="dialogFoot"><button type="button" data-close>Cancel</button><button class="primary">Save slot</button></div>
+    </form>
+  </dialog>
+  <template id="destinationTemplate">
+    <div class="panel fields destination">
+      <div class="pair">
+        <label>Name<input data-key="name" maxlength="64" required placeholder="Program feed"></label>
+        <label>Destination<select data-key="protocol">
+          <option value="rtmp">RTMP / RTMPS</option><option value="enhanced">Enhanced RTMP / RTMPS</option>
+          <option value="srt">SRT · MPEG-TS</option><option value="srt-mkv">SRT · Matroska</option>
+          <option value="hls">HLS · hosted locally</option><option value="hls-put">HLS · HTTP PUT</option>
+        </select></label>
+      </div>
+      <label class="destinationUrl">Destination URL<input data-key="url" type="password" maxlength="4096" autocomplete="off" placeholder="Includes any stream key"></label>
+      <div class="pair">
+        <label>Processing<select data-key="mode"><option value="copy">Bounce · copy video and audio</option><option value="encode">Transcode · video and AAC</option></select></label>
+        <label>Source audio track<input data-key="audioTrack" type="number" min="1" max="32" value="1" required></label>
+      </div>
+      <div class="pair encode"><label>Video codec<select data-key="codec"><option value="h264">H.264</option><option value="h265">H.265 / HEVC</option><option value="av1">AV1</option></select></label>
+        <label>Video bitrate (kbps)<input data-key="videoKbps" type="number" min="128" max="100000" value="4500" required></label>
+        <label>Audio bitrate (kbps)<input data-key="audioKbps" type="number" min="32" max="512" value="160" required></label></div>
+      <button class="removeDestination" type="button">Remove destination</button>
+    </div>
+  </template>
+  <dialog id="encoderEditor"><form id="encoderForm">
+    <div class="dialogHead"><h2>Address book entry</h2><button type="button" data-close aria-label="Close">×</button></div>
+    <div class="fields"><label>Name<input name="name" required maxlength="100"></label><label>Management URL<input name="address" type="url" required placeholder="http://encoder"></label><label>Tailscale URL or MagicDNS address<input name="tailnetAddress" type="url" placeholder="https://encoder.example.ts.net"></label>
+      <div class="pair"><label>Username<input name="username" autocomplete="off" maxlength="128"></label><label>Password<input name="password" type="password" autocomplete="new-password" maxlength="512" placeholder="Optional"></label></div>
+      <label class="check" id="forgetEncoderPassword" hidden><input name="forgetPassword" type="checkbox"> Remove saved password</label>
+    </div>
+    <div class="dialogFoot"><button type="button" data-close>Cancel</button><button class="primary">Save encoder</button></div>
+  </form></dialog>
+  <dialog id="encoderLogin"><form id="loginForm">
+    <div class="dialogHead"><h2>Connect to encoder</h2><button type="button" data-close aria-label="Close">×</button></div>
+    <div class="fields"><label>Management URL<input name="address" type="url" required></label><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><p id="loginError" role="alert" hidden></p></div>
+    <div class="dialogFoot"><button type="button" data-close>Cancel</button><button class="primary">Connect</button></div>
+  </form></dialog>
+  <template id="channelForm"><form class="panel fields channel">
+    <h2></h2><p class="signal"></p><p class="encoding"></p>
+    <label class="check"><input name="enabled" type="checkbox"> Enable primary SRT output</label>
+    <label>Mode<select name="mode"><option value="listener">Listener</option><option value="caller">Caller</option><option value="rendezvous">Rendezvous</option></select></label>
+    <label>Address<input name="host" required></label>
+    <div class="pair"><label>Port<input name="port" type="number" min="1" max="65535" required></label><label>Latency (ms)<input name="latency" type="number" min="20" max="8000" required></label></div>
+    <div class="rowActions"><button class="primary">Apply output</button><button type="button" class="makeRoute">Create SRT Island route</button></div>
+  </form></template>
+  <dialog id="details"><div class="dialogHead"><h2>Route log</h2><button type="button" data-close aria-label="Close">×</button></div><pre id="log"></pre></dialog>
+  <template id="card">
+    <article class="panel route">
+      <div class="routeHead"><h2></h2><span class="state"></span></div>
+      <a class="preview" target="_blank" rel="noopener" aria-label="Open full frame rate preview"><span>No video</span><img alt="Live confidence preview" hidden></a>
+      <dl><dt>Input</dt><dd class="input"></dd><dt>Output</dt><dd class="output"></dd><dt>Video</dt><dd class="video"></dd><dt>Audio</dt><dd class="audio"></dd></dl>
+      <div class="restreamLinks rowActions"></div>
+      <div class="actions"><button class="toggle primary"></button><button class="edit">Edit</button><button class="log">Log</button><button class="delete" aria-label="Delete route">Delete</button></div>
+    </article>
+  </template>
+</body>
+</html>

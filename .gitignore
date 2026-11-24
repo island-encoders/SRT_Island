@@ -1,0 +1,9 @@
+bin/
+obj/
+tools/
+bench/
+publish/
+release/
+package/
+build-bond/
+data/

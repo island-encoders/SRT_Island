@@ -4,6 +4,7 @@ SRT Island is a Windows x64 contribution receiver and playout station for live p
 
 ## Features
 
+- NTP-based alignment for H.264 and HEVC SRT feeds carrying Island Encoder or OBS SEI-Stamper timecodes.
 - Eight SRT slots with caller, listener and rendezvous modes, automatic reconnect, native Haivision bonding, local recordings, signal previews and source-rate pop-outs.
 - CPU, NVIDIA NVDEC and Direct3D decoding. DeckLink SDI/HDMI playout with embedded stereo or multichannel PCM. GPU HDMI/DisplayPort playout to a selected extended display and Windows audio endpoint. AJA routes use an AJA-enabled GStreamer build.
 - Simultaneous restreaming from each SRT input to RTMP/RTMPS, Enhanced RTMP, local or HTTP PUT HLS, and SRT using MPEG-TS or Matroska. Configure each destination to copy encoded video and a selected audio track or encode H.264, HEVC or AV1 with AAC.
@@ -29,6 +30,14 @@ Extract the Windows x64 package and run **Install SRT Island.cmd**. It downloads
 5. For local HLS, use **Copy HLS URL** from the active slot. This URL is served on the station loopback interface. For remote HLS publication, choose **HTTP PUT** and enter the receiving server's playlist URL. The receiver must accept creation or replacement of the playlist and segments.
 
 Each destination runs in an independent FFmpeg pipeline. RTMP and SRT/MPEG-TS outputs retry transport errors with bounded buffering. If a target falls too far behind, its output stops while the other destinations continue. Check the slot log for per-destination activity. Bounce HLS uses MPEG-TS segments cut at source keyframes. Transcoded HLS uses fragmented MP4. Stream URLs and keys are stored in the local slot configuration. [FFmpeg muxers](https://ffmpeg.org/ffmpeg-formats.html) · [FFmpeg protocols](https://ffmpeg.org/ffmpeg-protocols.html)
+
+## NTP timecode sync
+
+1. Point the encoders and SRT Island at the same NTP server. Enable embedded video timestamps on each encoder. For OBS, use SEI-Stamper with H.264 or HEVC.
+2. In **Settings**, enter the **NTP server** and set the shared **NTP playout delay**. The default is 3000 ms. Allow for the slowest path, including encoder and SRT latency. Restart active slots after saving clock settings.
+3. In **SRT Slots**, select **Align using NTP SEI timecodes** for each feed that should be aligned, including bonded feeds that carry MPEG-TS. Check each slot for **NTP SEI aligned**. If a slot reports **Late for sync**, increase the shared delay or reduce that path's latency.
+
+The receiver reads the UTC capture time from the SEI, associates it with the MPEG-TS video timestamp, and releases each feed on a common timeline while preserving its audio and video packet timing. Feeds without recognized timecodes, or without a usable NTP clock, continue to play and show their sync status. This is software alignment. Use hardware reference or genlock where the SDI signals need phase alignment.
 
 ## Remote control
 

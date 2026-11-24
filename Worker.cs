@@ -2,9 +2,9 @@ using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text.RegularExpressions;
 
-record WorkerStatus(string State, string Video, string Audio, bool HasPreview, bool Active, bool PlayingOut, string[] Log);
+record WorkerStatus(string State, string Video, string Audio, bool HasPreview, bool Active, bool PlayingOut, string[] Log, string TimeSync = "");
 
-sealed class Worker(Route route, EngineSettings engines, string restreamDirectory)
+sealed class Worker(Route route, EngineSettings engines, string restreamDirectory, NtpClock ntpClock)
 {
     private readonly CancellationTokenSource stop = new();
     private readonly object gate = new();
@@ -15,6 +15,8 @@ sealed class Worker(Route route, EngineSettings engines, string restreamDirector
     private string audio = "";
     private bool active = true;
     private bool playingOut;
+    private string syncState = "";
+    private bool SyncEnabled => route.Input == "srt" && route.NtpSync;
     private bool Bonded => route.Input == "srt" && route.Mode == "bonded";
     private bool UsesDisplay => DisplayOutput.IsGpu(route.Device);
     private bool UsesAja => AjaOutput.IsAja(route.Device);
@@ -42,7 +44,7 @@ sealed class Worker(Route route, EngineSettings engines, string restreamDirector
         {
             var hasPreview = FreshPreview();
             return new(state == "Receiving" && !hasPreview ? "Waiting for video" : state,
-                video, audio, hasPreview, active, playingOut && hasPreview, log.ToArray());
+                video, audio, hasPreview, active, playingOut && hasPreview, log.ToArray(), syncState);
         }
     }
 
@@ -79,6 +81,7 @@ sealed class Worker(Route route, EngineSettings engines, string restreamDirector
                     video = "";
                     audio = "";
                     playingOut = false;
+                    syncState = SyncEnabled ? "Waiting for SRT" : "";
                 }
                 try
                 {
@@ -128,12 +131,17 @@ sealed class Worker(Route route, EngineSettings engines, string restreamDirector
         using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         using var previewStop = CancellationTokenSource.CreateLinkedTokenSource(token);
-        using var input = new Process { StartInfo = ProcessInfo(engines.Receiver, ReceiverArguments(pipeName, relayName), redirectInput: Bonded) };
-        using var bond = Bonded ? new Process
+        using var input = new Process { StartInfo = ProcessInfo(engines.Receiver, ReceiverArguments(pipeName, relayName), redirectInput: Bonded || SyncEnabled) };
+        using var transport = Bonded ? new Process
         {
             StartInfo = ProcessInfo(engines.BondReceiver,
                 [string.Join(',', route.Host.Split(',', StringSplitOptions.TrimEntries).Select(host => host.Trim('[', ']'))),
                  route.Port.ToString(), route.Latency.ToString()])
+        } : SyncEnabled ? new Process
+        {
+            StartInfo = ProcessInfo(engines.Receiver,
+                ["-hide_banner", "-nostdin", "-nostats", "-f", "data", "-i", SrtUrl(),
+                 "-map", "0:0", "-c", "copy", "-flush_packets", "1", "-f", "data", "pipe:1"])
         } : null;
         using var output = route.Device.Length == 0 ? null : new Process
         {
@@ -148,6 +156,7 @@ sealed class Worker(Route route, EngineSettings engines, string restreamDirector
         Task? bridge = null;
         Task? bondLog = null;
         Task? bondBridge = null;
+        token = previewStop.Token;
         var previewReader = Feed.Read(pipe, previewStop.Token);
         var relay = relayPipe is null ? null : new Restream(engines.Receiver, destinations, restreamDirectory, AddLog)
             .Run(relayPipe, previewStop.Token);
@@ -161,22 +170,33 @@ sealed class Worker(Route route, EngineSettings engines, string restreamDirector
             }
             input.Start();
             inputLog = ReadLog(input.StandardError, "Receiver", token);
-            if (bond is not null)
+            if (transport is not null)
             {
-                bond.StartInfo.Environment["SRT_ISLAND_BOND_PASSPHRASE"] = route.BondPassphrase;
-                bond.Start();
-                bondLog = ReadLog(bond.StandardError, "Bond", token);
-                bondBridge = Pump(bond, input, token);
+                if (Bonded) transport.StartInfo.Environment["SRT_ISLAND_BOND_PASSPHRASE"] = route.BondPassphrase;
+                transport.Start();
+                bondLog = ReadLog(transport.StandardError, Bonded ? "Bond" : "SRT transport", token);
+                bondBridge = SyncEnabled ? PumpSynchronized(transport, input, token) : Pump(transport, input, token);
             }
             var inputExit = input.WaitForExitAsync(token);
-            if (output is null) await inputExit;
+            if (output is null)
+            {
+                var first = await Task.WhenAny(inputExit, bondBridge ?? inputExit);
+                await first;
+                if (first == bondBridge) await inputExit.WaitAsync(TimeSpan.FromSeconds(5), token);
+            }
             else
             {
                 var outputExit = output.WaitForExitAsync(token);
                 bridge = Pump(input, output, token);
-                var first = await Task.WhenAny(bridge, outputExit, inputExit);
+                var first = await Task.WhenAny(bridge, outputExit, inputExit, bondBridge ?? inputExit);
                 if (first == inputExit && input.ExitCode == 0)
                 {
+                    await bridge.WaitAsync(TimeSpan.FromSeconds(5), token);
+                    await outputExit.WaitAsync(TimeSpan.FromSeconds(5), token);
+                }
+                else if (first == bondBridge)
+                {
+                    await first;
                     await bridge.WaitAsync(TimeSpan.FromSeconds(5), token);
                     await outputExit.WaitAsync(TimeSpan.FromSeconds(5), token);
                 }
@@ -190,7 +210,7 @@ sealed class Worker(Route route, EngineSettings engines, string restreamDirector
         {
             Kill(input);
             if (output is not null) Kill(output);
-            if (bond is not null) Kill(bond);
+            if (transport is not null) Kill(transport);
             previewStop.Cancel();
             foreach (var task in new[] { inputLog, outputLog, outputTerminal, bridge, bondLog, bondBridge, previewReader, relay }.OfType<Task>())
             {
@@ -198,6 +218,22 @@ sealed class Worker(Route route, EngineSettings engines, string restreamDirector
                 catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException) { }
             }
         }
+    }
+
+    private async Task PumpSynchronized(Process input, Process output, CancellationToken token)
+    {
+        var sync = new TimeSync(ntpClock, engines.NtpDelayMs, value => { lock (gate) syncState = value; });
+        try { await sync.Run(input.StandardOutput.BaseStream, output.StandardInput.BaseStream, token); }
+        finally { output.StandardInput.Close(); }
+    }
+
+    private string SrtUrl()
+    {
+        var host = route.Host.Trim('[', ']');
+        if (host.Contains(':')) host = $"[{host}]";
+        var listen = route.Mode == "listener" ? "&listen_timeout=10000000" : "";
+        var id = route.StreamId.Length == 0 ? "" : $"&streamid={Uri.EscapeDataString(route.StreamId)}";
+        return $"srt://{host}:{route.Port}?mode={route.Mode}&latency={route.Latency * 1000}&timeout=5000000{listen}{id}";
     }
 
     private static async Task Pump(Process input, Process output, CancellationToken token)
@@ -240,17 +276,13 @@ sealed class Worker(Route route, EngineSettings engines, string restreamDirector
             default:
                 if (route.Decoder != "cpu") args.AddRange(["-hwaccel", route.Decoder]);
                 else args.AddRange(["-threads", "0"]);
-                if (Bonded)
+                if (Bonded || SyncEnabled)
                 {
-                    args.AddRange(["-f", "mpegts", "-probesize", "2000000", "-analyzeduration", "1500000", "-i", "pipe:0"]);
+                    args.AddRange(["-f", "mpegts", "-probesize", SyncEnabled ? "32768" : "2000000",
+                        "-analyzeduration", SyncEnabled ? "1" : "1500000", "-i", "pipe:0"]);
                     break;
                 }
-                var host = route.Host.Trim('[', ']');
-                if (host.Contains(':')) host = $"[{host}]";
-                var listen = route.Mode == "listener" ? "&listen_timeout=10000000" : "";
-                var id = route.StreamId.Length == 0 ? "" : $"&streamid={Uri.EscapeDataString(route.StreamId)}";
-                var url = $"srt://{host}:{route.Port}?mode={route.Mode}&latency={route.Latency * 1000}&timeout=5000000{listen}{id}";
-                args.AddRange(["-probesize", "2000000", "-analyzeduration", "1500000", "-i", url]);
+                args.AddRange(["-probesize", "2000000", "-analyzeduration", "1500000", "-i", SrtUrl()]);
                 break;
         }
         var audio = route.Input == "pattern" ? "1:a:0?" : $"0:a:{route.AudioTrack - 1}?";

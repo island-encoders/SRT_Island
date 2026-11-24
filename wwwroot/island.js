@@ -191,7 +191,7 @@ async function refresh() {
   for (const [index, entry] of dashboardSlots.entries()) {
     const item = routes.find(({ route }) => route.slot === index + 1);
     entry.name.textContent = `Slot ${index + 1}${item ? ' · ' + item.route.name : ''}`;
-    entry.label.textContent = item ? item.status.state : 'Unconfigured';
+    entry.label.textContent = item ? (item.status.active && item.status.timeSync ? item.status.timeSync : item.status.state) : 'Unconfigured';
     slotHosts[index].empty.hidden = Boolean(item);
     setPreview(entry.link, entry.image, item?.route.id, item?.status.hasPreview && !get('dashboard').hidden && !document.hidden);
   }
@@ -206,7 +206,7 @@ async function refresh() {
     }
     const select = selector => card.querySelector(selector);
     select('h2').textContent = route.slot ? `Slot ${route.slot} · ${route.name}` : route.name;
-    select('.state').textContent = status.state;
+    select('.state').textContent = status.active && status.timeSync ? `${status.state} · ${status.timeSync}` : status.state;
     select('.state').dataset.state = status.state;
     select('.input').textContent = { file: route.file, pattern: 'Colour bars + 1 kHz', srt: `${route.mode} · ${route.host}:${route.port}` }[route.input];
     const format = form.elements.rate.querySelector(`option[value="${route.rate}"]`)?.textContent;
@@ -377,6 +377,7 @@ form.onsubmit = async event => {
   if (value.mode !== 'bonded') value.bondPassphrase = '';
   value.record = form.elements.record.checked && value.input !== 'pattern';
   value.reconnect = form.elements.reconnect.checked;
+  value.ntpSync = value.input === 'srt' && form.elements.ntpSync.checked;
   if (!isDisplay(value.device)) value.displayAudio = 'mute';
   value.exclusiveDisplayAudio = value.displayAudio !== 'mute' && form.elements.exclusiveDisplayAudio.checked;
   if (isAja(value.device)) value.device = `aja|${value.ajaCard}|${value.ajaChannel}|${value.ajaConnector}`;
@@ -395,6 +396,7 @@ settings.onsubmit = event => {
   event.preventDefault();
   action(async () => {
     const config = Object.fromEntries(new FormData(settings));
+    config.ntpDelayMs = Number(config.ntpDelayMs);
     await api('settings', 'PUT', config);
     setAjaAvailability(config.ajaPlayer);
     await scan();

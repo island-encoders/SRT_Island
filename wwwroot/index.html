@@ -61,6 +61,8 @@
           <label>SRT bonding receiver executable<input name="bondReceiver" placeholder="C:\…\srt-island-bond.exe"></label>
           <label>GPU display player (mpv)<input name="displayPlayer" placeholder="C:\…\mpv.com"></label>
           <label>AJA GStreamer launcher<input name="ajaPlayer" placeholder="C:\…\gst-launch-1.0.exe"></label>
+          <label>NTP server<input name="ntpServer" value="time.windows.com" required></label>
+          <label>NTP playout delay (ms)<input name="ntpDelayMs" type="number" min="250" max="10000" value="3000" required></label>
           <label>Recordings folder<input name="recordings" required></label>
           <div><button class="primary">Save settings</button></div>
         </form>
@@ -88,6 +90,7 @@
         <label id="exclusiveAudio" class="check" hidden><input name="exclusiveDisplayAudio" type="checkbox"> Exclusive display audio</label>
         <div class="pair"><label id="hardwareRate">Hardware format<select name="rate"><option value="24000/1001">1080p23.98</option><option value="24">1080p24</option><option value="25">1080p25</option><option value="30000/1001">1080p29.97</option><option value="30">1080p30</option><option value="50">1080p50</option><option value="60000/1001">1080p59.94</option><option value="60">1080p60</option></select></label><label>Input audio track<input type="number" name="audioTrack" min="1" max="32" value="1"></label></div>
         <div class="pair" id="audioPairs"><label>Stereo pairs to embed<input name="audioPairs" type="number" min="1" max="8" value="1"></label><label>Source audio layout<select name="audioLayout"><option value="tracks">Consecutive stereo tracks</option><option value="interleaved">One interleaved track</option></select></label></div>
+        <label data-input="srt" class="check"><input name="ntpSync" type="checkbox"> Align using NTP SEI timecodes</label>
         <label data-input="srt" class="check"><input name="reconnect" type="checkbox" checked> Reconnect after a drop</label>
         <label class="check" id="recordOption"><input name="record" type="checkbox"> Save source recording (MPEG-TS)</label>
         <details id="restreamEditor" class="hardware">

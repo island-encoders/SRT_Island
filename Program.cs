@@ -185,13 +185,13 @@ static async Task<IResult> EncoderRequest(Func<Task<object>> request)
 
 record IdentifyDisplay(string Device);
 record EngineSettings(string Receiver, string DeckLink, string Recordings, string BondReceiver = "", string DisplayPlayer = "",
-    string AjaPlayer = "");
+    string AjaPlayer = "", string NtpServer = "time.windows.com", int NtpDelayMs = 3000);
 
 record Route(Guid Id, string Name, string Input, string Mode, string Host, int Port,
     int Latency, string StreamId, string File, string Device, string Rate, int AudioTrack,
     bool Record, bool Reconnect, string Decoder = "cpu", string AudioLayout = "tracks",
     int AudioPairs = 1, string BondPassphrase = "", string DisplayAudio = "mute", bool ExclusiveDisplayAudio = false,
-    int Slot = 0, Destination[]? Destinations = null);
+    int Slot = 0, Destination[]? Destinations = null, bool NtpSync = false);
 
 sealed class Station
 {
@@ -202,6 +202,7 @@ sealed class Station
     private readonly Dictionary<Guid, Worker> workers = new();
     private readonly HashSet<string> identifyingDisplays = new(StringComparer.OrdinalIgnoreCase);
     private EngineSettings settings;
+    private NtpClock ntpClock;
 
     public Station(string root, string home)
     {
@@ -218,6 +219,7 @@ sealed class Station
             .SelectMany(path => Directory.EnumerateFiles(path, executable, SearchOption.AllDirectories)).FirstOrDefault() ?? "";
         settings = Read<EngineSettings>("engines.json") ?? new(
             Find("ffmpeg.exe"), Find("ffmpeg-decklink.exe"), Path.Combine(root, "Recordings"), Find("srt-island-bond.exe"));
+        ntpClock = new NtpClock(settings.NtpServer);
         settings = settings with
         {
             Receiver = File.Exists(settings.Receiver) ? settings.Receiver : Find("ffmpeg.exe"),
@@ -261,7 +263,10 @@ sealed class Station
                 throw new InvalidOperationException("Choose a valid mpv executable.");
             if (string.IsNullOrWhiteSpace(value.Recordings) || !Path.IsPathFullyQualified(value.Recordings))
                 throw new InvalidOperationException("Choose an absolute recordings folder.");
+            if (Uri.CheckHostName(value.NtpServer) == UriHostNameType.Unknown || value.NtpDelayMs is < 250 or > 10000)
+                throw new InvalidOperationException("Enter an NTP server hostname or IP and a sync delay of 250–10000 ms.");
             Persist("engines.json", value);
+            if (!value.NtpServer.Equals(settings.NtpServer, StringComparison.OrdinalIgnoreCase)) ntpClock = new NtpClock(value.NtpServer);
             settings = value;
         }
     }
@@ -302,7 +307,7 @@ sealed class Station
             {
                 var status = workers.GetValueOrDefault(route.Id)?.Status();
                 return (object)new { route.Slot, route.Name, state = status?.State ?? "Stopped",
-                    receiving = status?.HasPreview ?? false, playingOut = status?.PlayingOut ?? false };
+                    receiving = status?.HasPreview ?? false, playingOut = status?.PlayingOut ?? false, timeSync = status?.TimeSync ?? "" };
             }).ToArray();
     }
 
@@ -425,7 +430,7 @@ sealed class Station
             if (route.Input == "file" && !File.Exists(route.File)) throw new InvalidOperationException("Test clip not found.");
             if (workers.Values.Any(worker => worker.Active && Conflicts(route, worker.Route)))
                 throw new InvalidOperationException("A running route already uses this listener port or hardware output.");
-            var worker = new Worker(route, settings, Path.Combine(root, "HLS", route.Id.ToString()));
+            var worker = new Worker(route, settings, Path.Combine(root, "HLS", route.Id.ToString()), ntpClock);
             workers[id] = worker;
             worker.Start();
         }
